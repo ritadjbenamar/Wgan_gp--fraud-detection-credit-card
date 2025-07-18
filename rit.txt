@@ -1,1 +1,188 @@
+import rarfile
+import os
+import numpy as np
+from PIL import Image
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+import time
+# Function to extract .rar files
+def extract_rar(file_path, extract_to):
+    rf = rarfile.RarFile(file_path)
+    rf.extractall(path=extract_to)
+    print(f"Extracted all files to {extract_to}")
 
+# Extract data
+file_path = '/content/Dataset.rar'
+extract_to = '/content/path_to_extract'
+extract_rar(file_path, extract_to)
+
+# Load images from folders
+def load_images_from_folder(folder, label):
+    images = []
+    labels = []
+    for filename in os.listdir(folder):
+        img_path = os.path.join(folder, filename)
+        if os.path.isfile(img_path):
+            img = Image.open(img_path)
+            img = img.resize((64, 64))  # Resize to 64x64
+            img_array = np.array(img) / 255.0  # Normalize to [0, 1]
+            images.append(img_array.flatten())  # Flatten the image for the MLP
+            labels.append(label)
+    return images, labels
+
+# Load training data
+apple_train_folder = '/content/path_to_extract/apple/train/'
+lemon_train_folder = '/content/path_to_extract/lemon/train/'
+apple_train_images, apple_train_labels = load_images_from_folder(apple_train_folder, 0)  # 0 for apples
+lemon_train_images, lemon_train_labels = load_images_from_folder(lemon_train_folder, 1)  # 1 for lemons
+
+# Combine training data
+train_images = np.array(apple_train_images + lemon_train_images)
+train_labels = np.array(apple_train_labels + lemon_train_labels).reshape(-1, 1)
+
+# Load test data
+apple_test_folder = '/content/path_to_extract/apple/test/'
+lemon_test_folder = '/content/path_to_extract/lemon/test/'
+apple_test_images, apple_test_labels = load_images_from_folder(apple_test_folder, 0)
+lemon_test_images, lemon_test_labels = load_images_from_folder(lemon_test_folder, 1)
+
+# Combine test data
+test_images = np.array(apple_test_images + lemon_test_images)
+test_labels = np.array(apple_test_labels + lemon_test_labels).reshape(-1, 1)
+
+# Activation functions
+def relu(x):
+    return np.maximum(0, x)
+
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+# Derivatives
+def relu_derivative(x):
+    return np.where(x > 0, 1, 0)
+
+def sigmoid_derivative(x):
+    return sigmoid(x) * (1 - sigmoid(x))
+
+# Mean Squared Error
+def mse(y_true, y_pred):
+    return np.mean((y_true - y_pred) ** 2)
+
+# MLP Initialization
+def initialize_weights(input_size, hidden_size, output_size, zero_init=False):
+    if zero_init:
+        weights_input_hidden = np.zeros((input_size, hidden_size))
+        bias_hidden = np.zeros((1, hidden_size))
+        weights_hidden_output = np.zeros((hidden_size, output_size))
+        bias_output = np.zeros((1, output_size))
+    else:
+        weights_input_hidden = np.random.randn(input_size, hidden_size) * 0.01
+        bias_hidden = np.zeros((1, hidden_size))
+        weights_hidden_output = np.random.randn(hidden_size, output_size) * 0.01
+        bias_output = np.zeros((1, output_size))
+
+    return weights_input_hidden, bias_hidden, weights_hidden_output, bias_output
+
+# Forward pass
+def forward_pass(X, weights_input_hidden, bias_hidden, weights_hidden_output, bias_output, activation_function='relu'):
+    z_hidden = np.dot(X, weights_input_hidden) + bias_hidden
+    if activation_function == 'relu':
+        a_hidden = relu(z_hidden)
+    else:
+        a_hidden = sigmoid(z_hidden)
+
+    z_output = np.dot(a_hidden, weights_hidden_output) + bias_output
+    a_output = sigmoid(z_output)  # Output layer uses sigmoid for binary classification
+
+    return a_output, a_hidden
+
+# Backward pass
+def backward_pass(X, y_true, a_hidden, a_output, weights_hidden_output, activation_function='relu'):
+    m = X.shape[0]
+    dz_output = a_output - y_true  # Derivative of MSE with respect to z_output
+   #Gradients for weights and biases from the hidden layer to the output layer
+    dw_hidden_output = np.dot(a_hidden.T, dz_output) / m
+    db_output = np.sum(dz_output, axis=0, keepdims=True) / m
+    #Backpropagate the error to the hidden layer
+    dz_hidden = np.dot(dz_output, weights_hidden_output.T)
+    if activation_function == 'relu':
+        dz_hidden *= relu_derivative(a_hidden)
+    else:
+        dz_hidden *= sigmoid_derivative(a_hidden)
+
+    dw_input_hidden = np.dot(X.T, dz_hidden) / m
+    db_hidden = np.sum(dz_hidden, axis=0, keepdims=True) / m
+
+    return dw_input_hidden, db_hidden, dw_hidden_output, db_output
+
+# Prediction function
+def predict(X, weights_input_hidden, bias_hidden, weights_hidden_output, bias_output, activation_function='relu'):
+    z_output, _ = forward_pass(X, weights_input_hidden, bias_hidden, weights_hidden_output, bias_output, activation_function)
+    return 1 if z_output >= 0.8 else 0
+
+# SGD Training
+def train_sgd(X_train, y_train, epochs, learning_rate, weights_input_hidden, bias_hidden, weights_hidden_output, bias_output, activation_function='relu'):
+    loss_history = []
+    for epoch in range(epochs):
+        for i in range(len(X_train)):
+            X = X_train[i].reshape(1, -1)
+            y = y_train[i].reshape(1, -1)
+
+            a_output, a_hidden = forward_pass(X, weights_input_hidden, bias_hidden, weights_hidden_output, bias_output, activation_function)
+            dw_input_hidden, db_hidden, dw_hidden_output, db_output = backward_pass(X, y, a_hidden, a_output, weights_hidden_output, activation_function)
+
+            weights_input_hidden -= learning_rate * dw_input_hidden
+            bias_hidden -= learning_rate * db_hidden
+            weights_hidden_output -= learning_rate * dw_hidden_output
+            bias_output -= learning_rate * db_output
+
+        # Compute MSE after each epoch
+        predictions, _ = forward_pass(X_train, weights_input_hidden, bias_hidden, weights_hidden_output, bias_output, activation_function)
+        mse_loss = mse(y_train, predictions)
+        loss_history.append(mse_loss)
+        print(f'Epoch {epoch}, MSE: {mse_loss:.4f}')
+
+    return loss_history
+
+# Compute confusion matrix
+def compute_confusion_matrix(true_labels, predicted_labels):
+    cm = confusion_matrix(true_labels, predicted_labels)
+    print("Confusion Matrix:")
+    print(cm)
+
+# Evaluate the model
+def evaluate_model(X_test, y_test, weights_input_hidden, bias_hidden, weights_hidden_output, bias_output, activation_function='relu'):
+    predictions = []
+    for i in range(len(X_test)):
+        X = X_test[i].reshape(1, -1)
+        pred = predict(X, weights_input_hidden, bias_hidden, weights_hidden_output, bias_output, activation_function)
+        predictions.append(pred)
+    return np.array(predictions).reshape(-1, 1)
+
+# Plot loss curve
+def plot_loss_curve(loss_history):
+    plt.plot(loss_history)
+    plt.title('Loss Curve')
+    plt.xlabel('Epochs')
+    plt.ylabel('MSE Loss')
+    plt.show()
+
+# Initialize the MLP
+input_size = 64 * 64 * 3  # Flattened size of the 64x64 images with 3 color channels
+hidden_size = 128  # Number of neurons in hidden layer
+output_size = 1  # Binary classification (apple or lemon)
+
+# Train using SGD with ReLU
+weights_input_hidden, bias_hidden, weights_hidden_output, bias_output = initialize_weights(input_size, hidden_size, output_size)
+start_time = time.time()
+loss_history = train_sgd(train_images, train_labels, epochs=100, learning_rate=0.001, weights_input_hidden=weights_input_hidden, bias_hidden=bias_hidden, weights_hidden_output=weights_hidden_output, bias_output=bias_output, activation_function='relu')
+time = time.time() - start_time
+print(f" time: {time:.4f} seconds")
+# Evaluate the model
+predictions = evaluate_model(test_images, test_labels, weights_input_hidden, bias_hidden, weights_hidden_output, bias_output, activation_function='relu')
+
+# Compute confusion matrix
+compute_confusion_matrix(test_labels, predictions)
+
+# Plot the loss curve
+plot_loss_curve(loss_history)
